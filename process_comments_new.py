@@ -1,114 +1,90 @@
-import pandas as pd
-import json
 import os
-import glob
+import json
+import regex
+from collections import defaultdict
+
+def is_valid_comment(text):
+    # Returns True if text contains at least one letter or number in any language
+    return bool(regex.search(r'\p{L}|\p{N}', text))
 
 def process_json_files():
-    # Get all JSON files in the current directory
-    json_files = [f for f in glob.glob("*.json") if f != "processed_urls.json"]
-    
-    # Dictionary to store DataFrames with conversation_id as key
-    all_dataframes = {}
-    failed_files = []
-    
-    print(f"Found {len(json_files)} JSON files to process")
-    
-    for json_file in json_files:
-        try:
-            print(f"\nProcessing: {json_file}")
-            
-            # Read JSON file
-            with open(json_file, 'r', encoding='utf-8') as f:
+    input_folder = 'new_data'
+    output_folder = 'processed_json'
+    all_data_file = os.path.join(output_folder, 'all_processed_data_by_conversation.json')
+    os.makedirs(output_folder, exist_ok=True)
+
+    all_data = {}
+
+    for filename in os.listdir(input_folder):
+        if filename.endswith('.json'):
+            input_path = os.path.join(input_folder, filename)
+            with open(input_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            
-            # Extract required information
-            # If channel_name is missing, try to extract from URL
-            if 'channel_name' not in data and 'url' in data:
-                url_parts = data['url'].split('/')
-                for i, part in enumerate(url_parts):
-                    if part in ['x.com', 'twitter.com'] and i + 1 < len(url_parts):
-                        data['channel_name'] = url_parts[i + 1]
-                        break
-            
-            channel_name = data.get('channel_name', 'unknown')
-            url = data.get('url', '')
+
+            channel_name = data.get('channel_name', '')
             conversation_id = data.get('conversation_id', '')
-            comments = data.get('comments', [])
-            
-            if not conversation_id or not comments:
-                print(f"Missing required data in {json_file}")
-                failed_files.append(json_file)
-                continue
-            
-            # Create DataFrame from comments
-            df = pd.DataFrame(comments)
-            
-            if df.empty:
-                print(f"No comments found in {json_file}")
-                failed_files.append(json_file)
-                continue
-            
-            # Create channel_name and url columns with NaN values
-            df['channel_name'] = pd.NA
-            df['url'] = pd.NA
-            
-            # Set channel_name and url only for the first row
-            df.loc[0, 'channel_name'] = channel_name
-            df.loc[0, 'url'] = url
-            
-            # Ensure required columns exist
-            if 'text' not in df.columns or 'timestamp' not in df.columns:
-                print(f"Missing required columns in {json_file}")
-                failed_files.append(json_file)
-                continue
-            
-            # Reorder columns to match required format
-            df = df[['channel_name', 'url', 'text', 'timestamp']]
-            
-            # Rename columns
-            df = df.rename(columns={'text': 'comments'})
-            
-            # Store DataFrame in dictionary
-            all_dataframes[conversation_id] = df
-            
-            print(f"Successfully processed {len(comments)} comments from {channel_name}")
-            print(f"Conversation ID: {conversation_id}")
-            
-        except Exception as e:
-            print(f"\nError processing {json_file}:")
-            print(f"Error details: {str(e)}")
-            failed_files.append(json_file)
-            continue
-    
-    # Print summary before saving
-    print("\n=== Processing Summary ===")
-    print(f"Total files found: {len(json_files)}")
-    print(f"Successfully processed: {len(all_dataframes)}")
-    print(f"Failed to process: {len(failed_files)}")
-    
-    if failed_files:
-        print("\nFailed files:")
-        for file in failed_files:
-            print(f"- {file}")
-    
-    # Save all DataFrames to a single Excel file with multiple sheets
-    if all_dataframes:
-        output_file = 'twitter_comments.xlsx'
-        print(f"\nSaving data to {output_file}...")
-        
-        try:
-            with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-                for conversation_id, df in all_dataframes.items():
-                    # Truncate sheet name if too long (Excel has a 31 character limit)
-                    sheet_name = conversation_id[:31]
-                    df.to_excel(writer, sheet_name=sheet_name, index=False)
-            
-            print(f"Successfully saved data to {output_file}")
-            print(f"Total sheets (conversation_ids) saved: {len(all_dataframes)}")
-        except Exception as e:
-            print(f"Error saving to Excel: {str(e)}")
-    else:
-        print("No data to save")
+            url = data.get('url', '')
+            scrape_start_time = data.get('scrape_start_time', '')
+            post = data['comments'].get('post', {})
+            comments = data['comments'].get('comments', [])
+
+            # Remove duplicate comments using a set
+            comment_set = set()
+            unique_comments = []
+            for c in comments:
+                key = c.get('text', '').strip()
+                if key not in comment_set:
+                    comment_set.add(key)
+                    unique_comments.append(c)
+
+            # Remove comments with no characters or numbers
+            valid_comments = []
+            for c in unique_comments:
+                if is_valid_comment(c.get('text', '')):
+                    # Remove user_handle from each comment
+                    c.pop('user_handle', None)
+                    valid_comments.append(c)
+
+            # Remove user_handle from post
+            post.pop('user_handle', None)
+
+            # Build output in requested format
+            post_id = conversation_id
+            post_obj = {
+                'post_id': post_id,
+                'text': post.get('text', ''),
+                'user_name': post.get('user_name', ''),
+                'post_time': post.get('post_time', '')
+            }
+            comments_list = []
+            for idx, c in enumerate(valid_comments, 1):
+                comments_list.append({
+                    'comment_id': f'{conversation_id}_{idx}',
+                    'text': c.get('text', ''),
+                    'user_name': c.get('user_name', ''),
+                    'comment_time': c.get('comment_time', '')
+                })
+            # Remove the first comment if present
+            if comments_list:
+                comments_list = comments_list[1:]
+            output_data = {
+                'channel_name': channel_name,
+                'conversation_id': conversation_id,
+                'url': url,
+                'total_comments': len(comments_list),  # updated count after removing first comment
+                'post': post_obj,
+                'comments': comments_list
+            }
+            # Save processed file for each conversation_id
+            output_path = os.path.join(output_folder, f'{conversation_id}.json')
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump({conversation_id: output_data}, f, ensure_ascii=False, indent=2)
+            # Add to all_data
+            all_data[conversation_id] = output_data
+
+    # Save all processed data in one file, separated by conversation_id
+    with open(all_data_file, 'w', encoding='utf-8') as f:
+        json.dump(all_data, f, ensure_ascii=False, indent=2)
 
 if __name__ == "__main__":
     process_json_files()

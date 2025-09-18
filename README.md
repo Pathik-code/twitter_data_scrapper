@@ -1,3 +1,59 @@
+This Data Scrapping Consist of Python file where we are using the twitter account login credentails. 
+We can scrap any users details without having the login in the twitter. 
+but if want to scrape the comments of any post then users required the login. 
+Using the python selenium package we started scraping the data. 
+this projects need the details where the one .csv file is required where we need to paste all the url from which we had to scrape the data. 
+
+
+
+
+
+
+1. Checking that how many of the json have the 0 comments 
+-- this is because some url data scrapping failed -- so repeating again to get the data of these url again.
+2. Data Cleaning
+-- removing the duplicates comments and the unreadable unnecessary comments.
+3. complete raw data prepared. 
+4. Keybords finding 
+5. best model for the analysis.  -- choose
+6. then figuring out the analysis things what we required 
+7. based on the requirement witing the prompt and get the output.
+8. graph making 
+9. then bert model using for the analysis output. 
+10. 
+
+
+
+
+ Finalize keyword & date range
+ 1. find the frequency of the hashtag and frequent word from the output list.
+ 2. 
+
+ Implement and test tweet scraper
+
+ Build preprocessing & language detection module
+
+ Fine-tune BERT for stance, sentiment, emotion
+
+ Develop LLM prompt templates & API integration
+
+ Design and compute n-gram and co-occurrence analytics
+
+ Create visualization scripts (Matplotlib/Plotly)
+
+ Validate with manual annotations and compute metrics
+
+ Automate end-to-end pipeline with Airflow or cron
+
+ Document code, findings, and maintain reproducible notebooks
+
+
+
+
+
+
+
+
 # Twitter/X Comments Scraper and Processor
 
 This project consists of two main Python scripts that work together to scrape and process comments from Twitter/X posts. The scripts are designed to handle multiple URLs and provide robust error handling and checkpoint saves.

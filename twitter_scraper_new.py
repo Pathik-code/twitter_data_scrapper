@@ -21,7 +21,7 @@ def extract_url_info(url):
 def get_output_filename(url):
     """Generate output filename based on channel name and conversation ID"""
     channel_name, conversation_id = extract_url_info(url)
-    return f'{channel_name}_comments_{conversation_id}.json'
+    return f'new_data/{channel_name}_comments_{conversation_id}.json'
 
 def load_existing_comments(filename):
     """Load existing comments from file if it exists"""
@@ -88,163 +88,212 @@ def handle_spam_warning(driver):
         return False
 
 def scroll_and_extract_comments(driver, conversation_id, url, output_filename, max_attempts=100):
-    """Advanced scrolling and extraction with multiple techniques and checkpointing"""
-    comments = []  # Start fresh, don't use existing comments to avoid duplicates
-    seen_comments = set()  # To track unique comments
+    comments = []
+    seen_comments = set()
     last_height = 0
     consecutive_same_height = 0
-    base_scroll_pause_time = 15  # Reduced base time
+    base_scroll_pause_time = 5
     scroll_pause_time = base_scroll_pause_time
     no_new_comments_count = 0
     request_count = 0
-    
+
     print("Waiting for initial page load...")
-    # Wait for the first tweet to be visible
     try:
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.support.ui import WebDriverWait
         WebDriverWait(driver, 30).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="tweetText"]'))
         )
         print("Page loaded successfully")
     except Exception as e:
         print("Warning: Timeout waiting for initial tweets to load")
-    
-    time.sleep(15)  # Additional wait to ensure full load
-    
+
+    time.sleep(15)
+
+    # --- Extract post data before comments ---
+    post_data = {}
+    try:
+        post_element = driver.find_element(By.CSS_SELECTOR, '[data-testid="tweet"]')
+        post_text = post_element.find_element(By.CSS_SELECTOR, '[data-testid="tweetText"]').text
+        try:
+            user_name = post_element.find_element(By.CSS_SELECTOR, 'div.r-1wbh5a2.r-dnmrzs span').text
+        except Exception:
+            user_name = None
+        try:
+            user_handle = post_element.find_element(By.CSS_SELECTOR, 'div.r-1wbh5a2.r-dnmrzs span+span').text
+        except Exception:
+            user_handle = None
+        try:
+            post_time = post_element.find_element(By.TAG_NAME, 'time').get_attribute('datetime')
+        except Exception:
+            post_time = None
+        post_data = {
+            'text': post_text,
+            'user_name': user_name,
+            'user_handle': user_handle,
+            'post_time': post_time,
+            'scrape_time': time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+    except Exception as e:
+        print(f"Error extracting post details: {str(e)}")
+
+    # --- Extract first page comments before scrolling ---
+    print("Extracting first page comments before scrolling...")
+    comment_elements = driver.find_elements(By.CSS_SELECTOR, '[data-testid="tweetText"]')
+    for element in comment_elements:
+        try:
+            comment_text = element.text
+            parent = element.find_element(By.XPATH, "./../../../../..")
+            try:
+                user_element = parent.find_element(By.CSS_SELECTOR, 'div.r-1wbh5a2.r-dnmrzs span')
+                user_name = user_element.text
+            except Exception:
+                user_name = None
+            try:
+                time_element = parent.find_element(By.TAG_NAME, 'time')
+                comment_time = time_element.get_attribute('datetime')
+            except Exception:
+                comment_time = None
+            try:
+                handle_element = parent.find_element(By.CSS_SELECTOR, 'div.r-1wbh5a2.r-dnmrzs span+span')
+                user_handle = handle_element.text
+            except Exception:
+                user_handle = None
+            comment_key = (comment_text, user_name, comment_time)
+            if comment_text and comment_key not in seen_comments:
+                seen_comments.add(comment_key)
+                comments.append({
+                    'text': comment_text,
+                    'user_name': user_name,
+                    'user_handle': user_handle,
+                    'comment_time': comment_time,
+                    'scrape_time': time.strftime('%Y-%m-%d %H:%M:%S')
+                })
+        except Exception as e:
+            print(f"Error extracting comment details: {str(e)}")
+            continue
+    print(f"First page comments extracted: {len(comments)}")
+
+    # --- Scrolling and extracting more comments ---
+    print("Scrolling to load more comments...")
+    last_height = driver.execute_script("return document.documentElement.scrollHeight")
+    consecutive_same_height = 0
     for attempt in range(max_attempts):
         try:
-            # Check for spam warning before scrolling
-            if handle_spam_warning(driver):
-                time.sleep(10)  # Wait after handling spam warning
-            
-            # Get current scroll height
-            current_height = driver.execute_script("return document.documentElement.scrollHeight")
-            
-            # Dynamic sleep time based on request count
-            request_count += 1
-            print(f"\n--- Scroll Attempt {attempt + 1}/{max_attempts} ---")
-            print(f"Current comments collected: {len(comments)}")
-            print(f"Current scroll height: {current_height}")
-            print(f"Request count: {request_count}")
-            
-            if request_count % 10 == 0:
-                scroll_pause_time = min(base_scroll_pause_time * 2, 90)
-                print(f"Increasing pause time to {scroll_pause_time} seconds (10 requests milestone)")
-            elif request_count % 20 == 0:
-                print("Taking a longer break to avoid rate limiting...")
-                print("Pausing for 120 seconds...")
-                time.sleep(120)  # 2-minute break every 20 requests
-                scroll_pause_time = base_scroll_pause_time
-                print(f"Resetting pause time to {base_scroll_pause_time} seconds")
-            
-            # First try normal scroll to bottom
-            driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight);")
-            time.sleep(scroll_pause_time)
-            
-            # If normal scroll didn't work, try alternative scrolling methods
-            if current_height == last_height:
-                # Try scrolling in smaller increments with random delays
-                scroll_amount = 500 + (request_count % 300)  # Vary scroll amount
-                driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
-                time.sleep(2 + (request_count % 5))  # Variable delay
-                driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
-                time.sleep(7 + (request_count % 5))  # Variable delay
-                
-                # Try to click "Show more replies" buttons if they exist
-                try:
-                    show_more_buttons = driver.find_elements(By.XPATH, "//span[contains(text(), 'Show more replies')]")
-                    for button in show_more_buttons:
-                        driver.execute_script("arguments[0].click();", button)
-                        time.sleep(15)
-                except:
-                    pass
-                    
-                consecutive_same_height += 1
-                if consecutive_same_height >= 5:  # If stuck at same height for 5 attempts
-                    print("Reached the bottom of comments")
-                    break
-            else:
-                consecutive_same_height = 0
-
-            # Find and extract comments
+            # Extract all comments before scrolling (allow duplicates)
             comment_elements = driver.find_elements(By.CSS_SELECTOR, '[data-testid="tweetText"]')
-            current_comments_count = len(comments)
-            
             for element in comment_elements:
                 try:
                     comment_text = element.text
-                    if comment_text and comment_text not in seen_comments:
-                        seen_comments.add(comment_text)
-                        comments.append({
-                            'text': comment_text,
-                            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
-                        })
+                    parent = element.find_element(By.XPATH, "./../../../../..")
+                    try:
+                        user_element = parent.find_element(By.CSS_SELECTOR, 'div.r-1wbh5a2.r-dnmrzs span')
+                        user_name = user_element.text
+                    except Exception:
+                        user_name = None
+                    try:
+                        time_element = parent.find_element(By.TAG_NAME, 'time')
+                        comment_time = time_element.get_attribute('datetime')
+                    except Exception:
+                        comment_time = None
+                    try:
+                        handle_element = parent.find_element(By.CSS_SELECTOR, 'div.r-1wbh5a2.r-dnmrzs span+span')
+                        user_handle = handle_element.text
+                    except Exception:
+                        user_handle = None
+                    comments.append({
+                        'text': comment_text,
+                        'user_name': user_name,
+                        'user_handle': user_handle,
+                        'comment_time': comment_time,
+                        'scrape_time': time.strftime('%Y-%m-%d %H:%M:%S')
+                    })
                 except Exception as e:
-                    print(f"Error extracting comment: {str(e)}")
+                    print(f"Error extracting comment details: {str(e)}")
                     continue
-            
-            # Check if we found any new comments
-            if len(comments) == current_comments_count:
-                no_new_comments_count += 1
-                print(f"No new comments found in this scroll (attempt {no_new_comments_count}/3)")
-                if no_new_comments_count >= 3:
-                    print("\n=== Completion Status ===")
-                    print(f"Total comments collected: {len(comments)}")
-                    print(f"No new comments in last 3 scrolls")
-                    print("Moving to next URL...")
-                    break
+            print(f"Comments collected before scroll: {len(comments)} (attempt {attempt+1})")
+            save_comments_checkpoint(output_filename, comments, conversation_id, url, driver.execute_script("return document.documentElement.scrollHeight"))
+
+            # Scroll to bottom
+            driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight);")
+            time.sleep(scroll_pause_time + 3)
+            current_height = driver.execute_script("return document.documentElement.scrollHeight")
+            if current_height == last_height:
+                consecutive_same_height += 1
+                print(f"No new scroll height detected (attempt {consecutive_same_height}/3)")
             else:
-                new_comments = len(comments) - current_comments_count
-                print(f"Found {new_comments} new comments in this scroll")
-                no_new_comments_count = 0
-            
-            # Save checkpoint every 20 comments
-            if len(comments) % 20 == 0 and len(comments) > 0:
-                save_comments_checkpoint(output_filename, comments, conversation_id, url, current_height)
-                print("\n=== Checkpoint Saved ===")
-                print(f"Total comments: {len(comments)}")
-                print(f"Current scroll height: {current_height}")
-                print(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-            
-            # Update last height
+                consecutive_same_height = 0
             last_height = current_height
-            
+
+            # Click 'Show more replies' buttons if present
+            try:
+                show_more_buttons = driver.find_elements(By.XPATH, "//span[contains(text(), 'Show more replies')]")
+                for button in show_more_buttons:
+                    driver.execute_script("arguments[0].click();", button)
+                    print("Clicked 'Show more replies' button.")
+                    time.sleep(5)
+            except Exception:
+                pass
+
+            # Click 'Show probable spam' buttons if present
+            try:
+                spam_buttons = driver.find_elements(By.XPATH, "//span[contains(text(), 'Show probable spam')]")
+                for button in spam_buttons:
+                    driver.execute_script("arguments[0].click();", button)
+                    print("Clicked 'Show probable spam' button.")
+                    time.sleep(5)
+            except Exception:
+                pass
+
+            # Extract all comments after scrolling (allow duplicates)
+            comment_elements = driver.find_elements(By.CSS_SELECTOR, '[data-testid="tweetText"]')
+            for element in comment_elements:
+                try:
+                    comment_text = element.text
+                    parent = element.find_element(By.XPATH, "./../../../../..")
+                    try:
+                        user_element = parent.find_element(By.CSS_SELECTOR, 'div.r-1wbh5a2.r-dnmrzs span')
+                        user_name = user_element.text
+                    except Exception:
+                        user_name = None
+                    try:
+                        time_element = parent.find_element(By.TAG_NAME, 'time')
+                        comment_time = time_element.get_attribute('datetime')
+                    except Exception:
+                        comment_time = None
+                    try:
+                        handle_element = parent.find_element(By.CSS_SELECTOR, 'div.r-1wbh5a2.r-dnmrzs span+span')
+                        user_handle = handle_element.text
+                    except Exception:
+                        user_handle = None
+                    comments.append({
+                        'text': comment_text,
+                        'user_name': user_name,
+                        'user_handle': user_handle,
+                        'comment_time': comment_time,
+                        'scrape_time': time.strftime('%Y-%m-%d %H:%M:%S')
+                    })
+                except Exception as e:
+                    print(f"Error extracting comment details: {str(e)}")
+                    continue
+            print(f"Comments collected after scroll: {len(comments)} (attempt {attempt+1})")
+            save_comments_checkpoint(output_filename, comments, conversation_id, url, driver.execute_script("return document.documentElement.scrollHeight"))
+
+            # Stop if no new comments after three consecutive scrolls with same height
+            if consecutive_same_height >= 3:
+                print("No new comments or scroll height after 3 attempts. Stopping.")
+                break
         except Exception as e:
-            print("\n=== Error Occurred ===")
-            print(f"Scroll attempt {attempt + 1} failed")
-            print(f"Error message: {str(e)}")
-            print(f"Comments collected so far: {len(comments)}")
-            
-            # Save current progress before retry
-            if len(comments) > 0:
-                save_comments_checkpoint(output_filename, comments, conversation_id, url, current_height)
-                print("Saved progress checkpoint before retry")
-            
-            # Check for spam warning first
-            if handle_spam_warning(driver):
-                print("Recovered from error by handling spam warning")
-                time.sleep(10)
-                continue
-            
-            # If not spam warning, use exponential backoff
-            retry_delay = min(scroll_pause_time * (2 ** (attempt % 4)), 180)  # Max 3 minutes
-            print(f"Using exponential backoff: {retry_delay} seconds")
-            print("Waiting before retry...")
-            time.sleep(retry_delay)
-            
-            # Refresh page if multiple consecutive errors
-            if attempt > 0 and attempt % 3 == 0:
-                print("Multiple errors occurred, refreshing page...")
-                driver.refresh()
-                time.sleep(15)
-            
+            print(f"Error during scrolling: {str(e)}")
             continue
-    
-    return comments
+
+    print(f"Total comments extracted: {len(comments)}")
+    return {'post': post_data, 'comments': comments}
 
 def login_to_twitter(driver, username, password):
     """Handle Twitter login"""
     driver.get("https://twitter.com/i/flow/login")
-    time.sleep(15)
+    time.sleep(10)
 
     # Enter username
     username_input = WebDriverWait(driver, 10).until(
@@ -300,8 +349,8 @@ def main():
         
         # Login to Twitter first
         print("Please enter your Twitter credentials:")
-        username = "*******"
-        password = "*******"
+        username = "************"
+        password = "***********"
         
         login_to_twitter(driver, username, password)
         print("Login successful!")
@@ -316,7 +365,7 @@ def main():
                 # Navigate to the URL
                 print(f"Navigating to {url}")
                 driver.get(url)
-                time.sleep(30)  # Increased wait for page load
+                time.sleep(10)  # Increased wait for page load
                 
                 # Extract comments for this URL
                 print(f"Starting to extract comments from {channel_name}'s post {conversation_id}")
@@ -333,7 +382,7 @@ def main():
                 
                 print(f"Successfully processed {url}, found {len(comments)} comments")
                 print("Waiting 30 seconds before next URL...")
-                time.sleep(30)
+                time.sleep(10)
                 
             except Exception as e:
                 print(f"Error processing URL {url}: {str(e)}")
